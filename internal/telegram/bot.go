@@ -45,6 +45,14 @@ type BridgeBot struct {
 	cardMessageID   int
 	isFirstCardSend bool
 
+	// Live streaming state
+	streamMessageID int
+	streamBuf       strings.Builder
+	streamLastEdit  time.Time
+	streamTimer     *time.Timer
+	streamDirty     bool
+	streamMu        sync.Mutex
+
 	turnStartTime  time.Time
 	longTaskStopCh chan struct{}
 
@@ -362,6 +370,17 @@ func (bb *BridgeBot) submitInstruction(text string) {
 }
 
 func (bb *BridgeBot) startTurnUI() {
+	bb.streamMu.Lock()
+	if bb.streamTimer != nil {
+		bb.streamTimer.Stop()
+		bb.streamTimer = nil
+	}
+	bb.streamMessageID = 0
+	bb.streamBuf.Reset()
+	bb.streamLastEdit = time.Time{}
+	bb.streamDirty = false
+	bb.streamMu.Unlock()
+
 	bb.mu.Lock()
 	bb.activeCard = activity.NewCard(bb.curProject, bb.curSession.Model, bb.curSession.Verbosity)
 	bb.cardMessageID = 0
@@ -418,6 +437,11 @@ func (bb *BridgeBot) renderCardUpdate(html string) error {
 	bb.mu.Lock()
 	defer bb.mu.Unlock()
 
+	// Suppress card if there are no steps yet and the card hasn't been sent
+	if bb.activeCard != nil && !bb.activeCard.HasSteps() && bb.cardMessageID == 0 {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -444,8 +468,96 @@ func (bb *BridgeBot) renderCardUpdate(html string) error {
 	return err
 }
 
+func (bb *BridgeBot) handleStreamChunk(delta string) {
+	bb.streamMu.Lock()
+	defer bb.streamMu.Unlock()
+
+	bb.streamBuf.WriteString(delta)
+	bb.streamDirty = true
+
+	now := time.Now()
+	// Throttle edits to at most once every 750ms to respect Telegram rate limits
+	if now.Sub(bb.streamLastEdit) >= 750*time.Millisecond {
+		bb.flushStreamEditLocked()
+	} else if bb.streamTimer == nil {
+		wait := 750*time.Millisecond - now.Sub(bb.streamLastEdit)
+		bb.streamTimer = time.AfterFunc(wait, func() {
+			bb.streamMu.Lock()
+			defer bb.streamMu.Unlock()
+			bb.streamTimer = nil
+			if bb.streamDirty {
+				bb.flushStreamEditLocked()
+			}
+		})
+	}
+}
+
+func (bb *BridgeBot) flushStreamEditLocked() {
+	if !bb.streamDirty {
+		return
+	}
+	bb.streamDirty = false
+	bb.streamLastEdit = time.Now()
+
+	raw := bb.streamBuf.String()
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return
+	}
+
+	safe := bb.redactor.Redact(raw)
+	display := safe
+	if len(display) > 3900 {
+		display = display[:3900] + "\n\n<i>[Streaming...]</i>"
+	}
+
+	htmlText := formatter.MarkdownToHTML(display)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if bb.streamMessageID == 0 {
+		sent, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    bb.cfg.Telegram.AllowedUserID,
+			Text:      htmlText,
+			ParseMode: models.ParseModeHTML,
+		})
+		if err == nil && sent != nil {
+			bb.streamMessageID = sent.ID
+		} else if err != nil {
+			plain := formatter.StripHTML(display)
+			sentPlain, errPlain := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: bb.cfg.Telegram.AllowedUserID,
+				Text:   plain,
+			})
+			if errPlain == nil && sentPlain != nil {
+				bb.streamMessageID = sentPlain.ID
+			}
+		}
+		return
+	}
+
+	_, err := bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:    bb.cfg.Telegram.AllowedUserID,
+		MessageID: bb.streamMessageID,
+		Text:      htmlText,
+		ParseMode: models.ParseModeHTML,
+	})
+	if err != nil {
+		plain := formatter.StripHTML(display)
+		_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    bb.cfg.Telegram.AllowedUserID,
+			MessageID: bb.streamMessageID,
+			Text:      plain,
+		})
+	}
+}
+
 func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 	switch ev.Type {
+	case parser.EventAssistantChunk:
+		bb.handleStreamChunk(ev.Text)
+
 	case parser.EventToolStart:
 		bb.mu.Lock()
 		if bb.activeCard != nil {
@@ -507,6 +619,16 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 
 	case parser.EventError:
 		bb.actionTicker.Stop()
+		bb.streamMu.Lock()
+		if bb.streamTimer != nil {
+			bb.streamTimer.Stop()
+			bb.streamTimer = nil
+		}
+		bb.streamMessageID = 0
+		bb.streamBuf.Reset()
+		bb.streamDirty = false
+		bb.streamMu.Unlock()
+
 		bb.mu.Lock()
 		if bb.longTaskStopCh != nil {
 			close(bb.longTaskStopCh)
@@ -562,6 +684,17 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 		deb.Flush()
 	}
 
+	bb.streamMu.Lock()
+	if bb.streamTimer != nil {
+		bb.streamTimer.Stop()
+		bb.streamTimer = nil
+	}
+	streamMsgID := bb.streamMessageID
+	bb.streamMessageID = 0
+	bb.streamBuf.Reset()
+	bb.streamDirty = false
+	bb.streamMu.Unlock()
+
 	// Prepare outbound message
 	rawAnswer := strings.TrimSpace(finalText)
 	if rawAnswer == "" {
@@ -580,21 +713,52 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log.Printf("[BridgeBot] finishTurn: dispatching %d response chunk(s) to Telegram", len(chunks))
-	for _, chunk := range chunks {
-		_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+	log.Printf("[BridgeBot] finishTurn: streamMsgID=%d, dispatching %d response chunk(s) to Telegram", streamMsgID, len(chunks))
+
+	if streamMsgID > 0 && len(chunks) > 0 {
+		_, err := bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:    bb.cfg.Telegram.AllowedUserID,
-			Text:      chunk,
+			MessageID: streamMsgID,
+			Text:      chunks[0],
 			ParseMode: models.ParseModeHTML,
 		})
 		if err != nil {
-			log.Printf("[BridgeBot] HTML SendMessage error: %v, falling back to plain text", err)
-			// Fallback: send plain text if Telegram rejects markup
-			plain := formatter.StripHTML(chunk)
-			_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: bb.cfg.Telegram.AllowedUserID,
-				Text:   plain,
+			plain := formatter.StripHTML(chunks[0])
+			_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:    bb.cfg.Telegram.AllowedUserID,
+				MessageID: streamMsgID,
+				Text:      plain,
 			})
+		}
+
+		for _, chunk := range chunks[1:] {
+			_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:    bb.cfg.Telegram.AllowedUserID,
+				Text:      chunk,
+				ParseMode: models.ParseModeHTML,
+			})
+			if err != nil {
+				plain := formatter.StripHTML(chunk)
+				_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: bb.cfg.Telegram.AllowedUserID,
+					Text:   plain,
+				})
+			}
+		}
+	} else {
+		for _, chunk := range chunks {
+			_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:    bb.cfg.Telegram.AllowedUserID,
+				Text:      chunk,
+				ParseMode: models.ParseModeHTML,
+			})
+			if err != nil {
+				plain := formatter.StripHTML(chunk)
+				_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: bb.cfg.Telegram.AllowedUserID,
+					Text:   plain,
+				})
+			}
 		}
 	}
 

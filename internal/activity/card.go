@@ -74,6 +74,12 @@ func (c *Card) AddOrUpdateStep(id, label string, status StepStatus, duration tim
 	})
 }
 
+func (c *Card) HasSteps() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.Steps) > 0
+}
+
 func (c *Card) MarkDone(summary string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

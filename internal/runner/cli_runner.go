@@ -1,12 +1,15 @@
 package runner
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,11 +65,61 @@ func (r *CLIRunner) Start(cwd, model, conversationID string) error {
 	return nil
 }
 
-type AgyJSONResult struct {
-	ConversationID string `json:"conversation_id"`
-	Status         string `json:"status"`
-	Response       string `json:"response"`
-	Error          string `json:"error"`
+// StreamEvent models NDJSON lines emitted by agy --output-format stream-json
+type StreamEvent struct {
+	Event          string           `json:"event"`
+	ConversationID string           `json:"conversation_id"`
+	StepUpdate     *StepUpdateEvent `json:"step_update,omitempty"`
+	Result         *ResultEvent     `json:"result,omitempty"`
+}
+
+type StepUpdateEvent struct {
+	ConversationID string        `json:"conversation_id"`
+	StepIndex      int           `json:"step_index"`
+	State          string        `json:"state"`     // ACTIVE, DONE, ERROR
+	StepType       string        `json:"step_type"` // user_input, tool, agent_response
+	ToolName       string        `json:"tool_name,omitempty"`
+	TextDelta      string        `json:"text_delta,omitempty"`
+	DurationSec    float64       `json:"duration_seconds,omitempty"`
+	ToolInfo       *StepToolInfo `json:"tool_info,omitempty"`
+}
+
+type StepToolInfo struct {
+	Name       string                 `json:"name"`
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	Output     string                 `json:"output,omitempty"`
+}
+
+type ResultEvent struct {
+	ConversationID  string  `json:"conversation_id"`
+	Status          string  `json:"status"`
+	Response        string  `json:"response"`
+	Error           string  `json:"error,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds"`
+}
+
+func formatToolLabel(name string, info *StepToolInfo) string {
+	if info == nil || info.Parameters == nil {
+		return name
+	}
+	switch name {
+	case "run_command":
+		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
+			if len(cmd) > 35 {
+				return fmt.Sprintf("run: %s...", cmd[:32])
+			}
+			return fmt.Sprintf("run: %s", cmd)
+		}
+	case "read_file":
+		if p, ok := info.Parameters["Path"].(string); ok && p != "" {
+			return fmt.Sprintf("read: %s", filepath.Base(p))
+		}
+	case "edit_file", "write_file":
+		if p, ok := info.Parameters["Path"].(string); ok && p != "" {
+			return fmt.Sprintf("edit: %s", filepath.Base(p))
+		}
+	}
+	return name
 }
 
 func (r *CLIRunner) WriteInstruction(text string) error {
@@ -85,7 +138,7 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 
 	go func() {
 		startTime := time.Now()
-		args := []string{"--output-format", "json", fmt.Sprintf("--print=%s", text)}
+		args := []string{"--output-format", "stream-json", fmt.Sprintf("--print=%s", text)}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
@@ -104,6 +157,18 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 		}
 		cmd.Env = os.Environ()
 
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			r.mu.Lock()
+			r.isBusy = false
+			r.mu.Unlock()
+			log.Printf("[CLIRunner] Error creating stdout pipe: %v", err)
+			if cb != nil {
+				cb(parser.ParsedEvent{Type: parser.EventError, Text: err.Error()})
+			}
+			return
+		}
+
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 
@@ -111,7 +176,101 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 		r.cmd = cmd
 		r.mu.Unlock()
 
-		stdoutBytes, err := cmd.Output()
+		if err := cmd.Start(); err != nil {
+			r.mu.Lock()
+			r.cmd = nil
+			r.isBusy = false
+			r.mu.Unlock()
+			log.Printf("[CLIRunner] Error starting agy: %v", err)
+			if cb != nil {
+				cb(parser.ParsedEvent{Type: parser.EventError, Text: err.Error()})
+			}
+			return
+		}
+
+		reader := bufio.NewReader(stdoutPipe)
+		var accumulatedText strings.Builder
+		var finalResponse string
+		var conversationID string
+		hasResult := false
+
+		for {
+			line, readErr := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				lineTrimmed := bytes.TrimSpace(line)
+				if len(lineTrimmed) > 0 && lineTrimmed[0] == '{' {
+					var ev StreamEvent
+					if jsonErr := json.Unmarshal(lineTrimmed, &ev); jsonErr == nil {
+						if ev.Event == "init" && ev.ConversationID != "" {
+							conversationID = ev.ConversationID
+							r.mu.Lock()
+							r.convID = ev.ConversationID
+							r.mu.Unlock()
+						} else if ev.Event == "step_update" && ev.StepUpdate != nil {
+							su := ev.StepUpdate
+							if su.ConversationID != "" && conversationID == "" {
+								conversationID = su.ConversationID
+								r.mu.Lock()
+								r.convID = su.ConversationID
+								r.mu.Unlock()
+							}
+							switch su.StepType {
+							case "tool":
+								stepID := fmt.Sprintf("step-%d", su.StepIndex)
+								label := formatToolLabel(su.ToolName, su.ToolInfo)
+								if su.State == "ACTIVE" {
+									if cb != nil {
+										cb(parser.ParsedEvent{
+											Type: parser.EventToolStart,
+											ID:   stepID,
+											Text: label,
+										})
+									}
+								} else if su.State == "DONE" || su.State == "ERROR" {
+									if cb != nil {
+										cb(parser.ParsedEvent{
+											Type:       parser.EventToolEnd,
+											ID:         stepID,
+											Ok:         su.State == "DONE",
+											DurationMs: int64(su.DurationSec * 1000),
+											Text:       label,
+										})
+									}
+								}
+							case "agent_response":
+								if su.TextDelta != "" {
+									accumulatedText.WriteString(su.TextDelta)
+									if cb != nil {
+										cb(parser.ParsedEvent{
+											Type: parser.EventAssistantChunk,
+											Text: su.TextDelta,
+										})
+									}
+								}
+							}
+						} else if ev.Event == "result" && ev.Result != nil {
+							hasResult = true
+							finalResponse = ev.Result.Response
+							if ev.Result.ConversationID != "" {
+								conversationID = ev.Result.ConversationID
+								r.mu.Lock()
+								r.convID = ev.Result.ConversationID
+								r.mu.Unlock()
+							}
+							if ev.Result.Status != "SUCCESS" && ev.Result.Error != "" {
+								finalResponse = fmt.Sprintf("Error: %s", ev.Result.Error)
+							}
+						}
+					}
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+
+		waitErr := cmd.Wait()
+		duration := time.Since(startTime)
 
 		r.mu.Lock()
 		r.cmd = nil
@@ -119,62 +278,31 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 		r.isBusy = false
 		r.mu.Unlock()
 
-		duration := time.Since(startTime)
-
-		if err != nil {
+		if waitErr != nil && !hasResult {
 			stderrStr := stderrBuf.String()
-			errMsg := fmt.Sprintf("agy exited with error: %v\n%s", err, stderrStr)
+			errMsg := fmt.Sprintf("agy exited with error: %v\n%s", waitErr, stderrStr)
 			log.Printf("[CLIRunner] Turn failed (%v): %s", duration, errMsg)
 			if cb != nil {
 				cb(parser.ParsedEvent{
 					Type: parser.EventError,
 					Text: errMsg,
 				})
-				cb(parser.ParsedEvent{
-					Type: parser.EventPromptReady,
-					Text: fmt.Sprintf("⚠️ %s", errMsg),
-				})
 			}
 			return
 		}
 
-		// Parse JSON response
-		var res AgyJSONResult
-		jsonParsed := false
-
-		// In case any preamble appears before JSON on stdout, find the outermost JSON object
-		startIdx := bytes.IndexByte(stdoutBytes, '{')
-		lastIdx := bytes.LastIndexByte(stdoutBytes, '}')
-		if startIdx >= 0 && lastIdx > startIdx {
-			cleanJSON := stdoutBytes[startIdx : lastIdx+1]
-			if jsonErr := json.Unmarshal(cleanJSON, &res); jsonErr == nil && res.Response != "" {
-				jsonParsed = true
-				if res.ConversationID != "" {
-					r.mu.Lock()
-					r.convID = res.ConversationID
-					r.mu.Unlock()
-				}
-				log.Printf("[CLIRunner] Turn completed in %v. Conv: %s, response length: %d chars", duration, res.ConversationID, len(res.Response))
-				if cb != nil {
-					cb(parser.ParsedEvent{
-						Type: parser.EventPromptReady,
-						Text: res.Response,
-					})
-				}
-				return
-			}
+		if finalResponse == "" {
+			finalResponse = accumulatedText.String()
+		}
+		if finalResponse == "" {
+			finalResponse = "Done."
 		}
 
-		// Fallback: raw stdout if not clean JSON
-		log.Printf("[CLIRunner] Turn completed in %v (non-JSON output, parsed=%v, raw len: %d)", duration, jsonParsed, len(stdoutBytes))
+		log.Printf("[CLIRunner] Turn completed in %v. Conv: %s, response length: %d chars", duration, conversationID, len(finalResponse))
 		if cb != nil {
-			textOut := string(stdoutBytes)
-			if textOut == "" {
-				textOut = "Done."
-			}
 			cb(parser.ParsedEvent{
 				Type: parser.EventPromptReady,
-				Text: textOut,
+				Text: finalResponse,
 			})
 		}
 	}()
