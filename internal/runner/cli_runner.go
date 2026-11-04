@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"agent-bridge/internal/parser"
@@ -228,6 +229,7 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 			cmd.Dir = cwd
 		}
 		cmd.Env = os.Environ()
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
@@ -396,7 +398,9 @@ func (r *CLIRunner) SendApprovalResponse(allowed bool) error {
 func (r *CLIRunner) Interrupt() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cmd != nil && r.cmd.Process != nil {
+	if r.cmd != nil && r.cmd.Process != nil && r.cmd.Process.Pid > 0 {
+		// Kill the entire process group (negative PID) so all spawned children (hanging scripts, curl, etc.) are terminated
+		_ = syscall.Kill(-r.cmd.Process.Pid, syscall.SIGKILL)
 		_ = r.cmd.Process.Kill()
 	}
 	r.isBusy = false
