@@ -186,6 +186,18 @@ func (bb *BridgeBot) Start(ctx context.Context) error {
 	pCfg := bb.cfg.Projects[bb.curProject]
 	_ = bb.runner.Start(pCfg.Path, bb.curSession.Model, bb.curSession.ConversationID)
 
+	// Auto-drain any pending queue items from previous run
+	go func() {
+		time.Sleep(1 * time.Second)
+		item, err := bb.queue.DrainNext()
+		if err != nil {
+			log.Printf("[BridgeBot] Error draining queue on startup: %v", err)
+		} else if item != nil {
+			log.Printf("[BridgeBot] Startup: drained queued item %d: %q", item.ID, item.Text)
+			bb.startTurnUI()
+		}
+	}()
+
 	bb.b.Start(ctx)
 	return nil
 }
@@ -493,6 +505,20 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 		bb.finishTurn(ev.Text)
 
 	case parser.EventError:
+		bb.actionTicker.Stop()
+		bb.mu.Lock()
+		if bb.longTaskStopCh != nil {
+			close(bb.longTaskStopCh)
+			bb.longTaskStopCh = nil
+		}
+		if bb.activeCard != nil {
+			bb.activeCard.MarkDone("Failed")
+		}
+		if bb.cardDebouncer != nil {
+			bb.cardDebouncer.Flush()
+		}
+		bb.mu.Unlock()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
@@ -501,6 +527,18 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 			ParseMode:           models.ParseModeHTML,
 			DisableNotification: false,
 		})
+
+		// Drain next waiting message so queue does not deadlock
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			item, err := bb.queue.DrainNext()
+			if err != nil {
+				log.Printf("[BridgeBot] Error draining queue after runner error: %v", err)
+			} else if item != nil {
+				log.Printf("[BridgeBot] Drained queued item %d: %q", item.ID, item.Text)
+				bb.startTurnUI()
+			}
+		}()
 	}
 }
 
