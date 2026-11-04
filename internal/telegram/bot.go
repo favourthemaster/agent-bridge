@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -537,6 +538,7 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	log.Printf("[BridgeBot] finishTurn: dispatching %d response chunk(s) to Telegram", len(chunks))
 	for _, chunk := range chunks {
 		_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    bb.cfg.Telegram.AllowedUserID,
@@ -544,6 +546,7 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 			ParseMode: models.ParseModeHTML,
 		})
 		if err != nil {
+			log.Printf("[BridgeBot] HTML SendMessage error: %v, falling back to plain text", err)
 			// Fallback: send plain text if Telegram rejects markup
 			plain := formatter.StripHTML(chunk)
 			_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
@@ -555,9 +558,12 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 
 	// Drain next message from queue if waiting
 	go func() {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		item, err := bb.queue.DrainNext()
-		if err == nil && item != nil {
+		if err != nil {
+			log.Printf("[BridgeBot] Error draining queue: %v", err)
+		} else if item != nil {
+			log.Printf("[BridgeBot] Drained queued item %d: %q", item.ID, item.Text)
 			bb.startTurnUI()
 		}
 	}()

@@ -1,11 +1,14 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"agent-bridge/internal/parser"
 )
@@ -81,12 +84,7 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 	r.mu.Unlock()
 
 	go func() {
-		defer func() {
-			r.mu.Lock()
-			r.isBusy = false
-			r.mu.Unlock()
-		}()
-
+		startTime := time.Now()
 		args := []string{"--output-format", "json", fmt.Sprintf("--print=%s", text)}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -98,25 +96,36 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 			args = append(args, "--dangerously-skip-permissions")
 		}
 
+		log.Printf("[CLIRunner] Launching agy turn (cwd: %s, model: %s, conv: %s, prompt: %q)", cwd, model, convID, text)
+
 		cmd := exec.Command("agy", args...)
 		if cwd != "" {
 			cmd.Dir = cwd
 		}
 		cmd.Env = os.Environ()
 
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+
 		r.mu.Lock()
 		r.cmd = cmd
 		r.mu.Unlock()
 
-		out, err := cmd.CombinedOutput()
+		stdoutBytes, err := cmd.Output()
 
 		r.mu.Lock()
 		r.cmd = nil
+		// Mark idle BEFORE notifying listener so queue drainer can dispatch next item
+		r.isBusy = false
 		r.mu.Unlock()
 
+		duration := time.Since(startTime)
+
 		if err != nil {
+			stderrStr := stderrBuf.String()
+			errMsg := fmt.Sprintf("agy exited with error: %v\n%s", err, stderrStr)
+			log.Printf("[CLIRunner] Turn failed (%v): %s", duration, errMsg)
 			if cb != nil {
-				errMsg := fmt.Sprintf("agy exited with error: %v\nOutput: %s", err, string(out))
 				cb(parser.ParsedEvent{
 					Type: parser.EventError,
 					Text: errMsg,
@@ -129,25 +138,37 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 			return
 		}
 
+		// Parse JSON response
 		var res AgyJSONResult
-		if jsonErr := json.Unmarshal(out, &res); jsonErr == nil && res.Response != "" {
-			if res.ConversationID != "" {
-				r.mu.Lock()
-				r.convID = res.ConversationID
-				r.mu.Unlock()
+		jsonParsed := false
+
+		// In case any preamble appears before JSON on stdout, find the outermost JSON object
+		startIdx := bytes.IndexByte(stdoutBytes, '{')
+		lastIdx := bytes.LastIndexByte(stdoutBytes, '}')
+		if startIdx >= 0 && lastIdx > startIdx {
+			cleanJSON := stdoutBytes[startIdx : lastIdx+1]
+			if jsonErr := json.Unmarshal(cleanJSON, &res); jsonErr == nil && res.Response != "" {
+				jsonParsed = true
+				if res.ConversationID != "" {
+					r.mu.Lock()
+					r.convID = res.ConversationID
+					r.mu.Unlock()
+				}
+				log.Printf("[CLIRunner] Turn completed in %v. Conv: %s, response length: %d chars", duration, res.ConversationID, len(res.Response))
+				if cb != nil {
+					cb(parser.ParsedEvent{
+						Type: parser.EventPromptReady,
+						Text: res.Response,
+					})
+				}
+				return
 			}
-			if cb != nil {
-				cb(parser.ParsedEvent{
-					Type: parser.EventPromptReady,
-					Text: res.Response,
-				})
-			}
-			return
 		}
 
-		// Fallback: raw text output if not JSON
+		// Fallback: raw stdout if not clean JSON
+		log.Printf("[CLIRunner] Turn completed in %v (non-JSON output, parsed=%v, raw len: %d)", duration, jsonParsed, len(stdoutBytes))
 		if cb != nil {
-			textOut := string(out)
+			textOut := string(stdoutBytes)
 			if textOut == "" {
 				textOut = "Done."
 			}
