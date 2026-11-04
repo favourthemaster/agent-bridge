@@ -122,6 +122,77 @@ func formatToolLabel(name string, info *StepToolInfo) string {
 	return name
 }
 
+func getTranscriptPath(convID string) string {
+	if convID == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs", "transcript.jsonl")
+}
+
+func countTranscriptLines(path string) int {
+	if path == "" {
+		return 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	count := 0
+	for scanner.Scan() {
+		count++
+	}
+	return count
+}
+
+func extractThinkingSince(convID string, startLine int) string {
+	path := getTranscriptPath(convID)
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 2*1024*1024)
+
+	currentLine := 0
+	var thinkings []string
+
+	type TranscriptStep struct {
+		Type     string `json:"type"`
+		Thinking string `json:"thinking"`
+	}
+
+	for scanner.Scan() {
+		currentLine++
+		if currentLine <= startLine {
+			continue
+		}
+		var step TranscriptStep
+		if err := json.Unmarshal(scanner.Bytes(), &step); err == nil {
+			if step.Type == "PLANNER_RESPONSE" && strings.TrimSpace(step.Thinking) != "" {
+				thinkings = append(thinkings, strings.TrimSpace(step.Thinking))
+			}
+		}
+	}
+
+	if len(thinkings) == 0 {
+		return ""
+	}
+	return strings.Join(thinkings, "\n\n")
+}
+
 func (r *CLIRunner) WriteInstruction(text string) error {
 	r.mu.Lock()
 	if r.isBusy {
@@ -138,6 +209,7 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 
 	go func() {
 		startTime := time.Now()
+		startTranscriptLines := countTranscriptLines(getTranscriptPath(convID))
 		args := []string{"--output-format", "stream-json", fmt.Sprintf("--print=%s", text)}
 		if model != "" {
 			args = append(args, "--model", model)
@@ -298,11 +370,18 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 			finalResponse = "Done."
 		}
 
-		log.Printf("[CLIRunner] Turn completed in %v. Conv: %s, response length: %d chars", duration, conversationID, len(finalResponse))
+		activeConv := conversationID
+		if activeConv == "" {
+			activeConv = convID
+		}
+		thinkingTrace := extractThinkingSince(activeConv, startTranscriptLines)
+
+		log.Printf("[CLIRunner] Turn completed in %v. Conv: %s, response length: %d chars, thinking length: %d chars", duration, conversationID, len(finalResponse), len(thinkingTrace))
 		if cb != nil {
 			cb(parser.ParsedEvent{
-				Type: parser.EventPromptReady,
-				Text: finalResponse,
+				Type:     parser.EventPromptReady,
+				Text:     finalResponse,
+				Thinking: thinkingTrace,
 			})
 		}
 	}()

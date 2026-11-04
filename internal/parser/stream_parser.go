@@ -25,6 +25,7 @@ type ParsedEvent struct {
 	Type       EventType
 	ID         string
 	Text       string
+	Thinking   string
 	Ok         bool
 	DurationMs int64
 	ExitCode   int

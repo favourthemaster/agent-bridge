@@ -12,6 +12,10 @@ func FormatThinkingTrace(thinking string) string {
 		return ""
 	}
 
+	if len(trimmed) > 2000 {
+		trimmed = trimmed[:2000] + "..."
+	}
+
 	escaped := EscapeHTML(trimmed)
 	return fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process</b>\n<i>%s</i></blockquote>\n\n", escaped)
 }

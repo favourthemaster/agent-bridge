@@ -615,7 +615,7 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 		_ = bb.approvals.RequestApproval(ctx, bb.curSession.ID, ev.ID, ev.Text, timeout)
 
 	case parser.EventPromptReady:
-		bb.finishTurn(ev.Text)
+		bb.finishTurn(ev.Text, ev.Thinking)
 
 	case parser.EventError:
 		bb.actionTicker.Stop()
@@ -666,7 +666,7 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 	}
 }
 
-func (bb *BridgeBot) finishTurn(finalText string) {
+func (bb *BridgeBot) finishTurn(finalText, thinking string) {
 	bb.actionTicker.Stop()
 
 	bb.mu.Lock()
@@ -706,6 +706,13 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 
 	// Format as HTML
 	formattedHTML := formatter.MarkdownToHTML(safeAnswer)
+
+	// Prepend collapsible thinking trace if present and not in quiet mode
+	if strings.TrimSpace(thinking) != "" && bb.curSession.Verbosity != "quiet" {
+		safeThinking := bb.redactor.Redact(thinking)
+		traceHTML := formatter.FormatThinkingTrace(safeThinking)
+		formattedHTML = traceHTML + formattedHTML
+	}
 
 	// Split message if > 4,096 chars
 	chunks := formatter.SplitMessage(formattedHTML, 4000)
