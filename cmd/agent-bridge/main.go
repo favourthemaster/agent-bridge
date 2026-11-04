@@ -20,6 +20,7 @@ import (
 func main() {
 	var configPath string
 	var useMock bool
+	var runnerType string
 
 	defaultConfig := "config.yaml"
 	if home, err := os.UserHomeDir(); err == nil {
@@ -30,7 +31,8 @@ func main() {
 	}
 
 	flag.StringVar(&configPath, "config", defaultConfig, "Path to YAML configuration file")
-	flag.BoolVar(&useMock, "mock", false, "Use in-memory fake runner instead of real agy PTY (for testing/demos)")
+	flag.BoolVar(&useMock, "mock", false, "Use in-memory fake runner instead of real agy (for testing/demos)")
+	flag.StringVar(&runnerType, "runner", "cli", "Runner mode: 'cli' (headless print/json) or 'pty' (interactive pseudo-terminal)")
 	flag.Parse()
 
 	log.Printf("[agent-bridge] Starting agent-bridge daemon...")
@@ -64,9 +66,12 @@ func main() {
 			r.EmitTurnSuccess("Mock reasoning", fmt.Sprintf("Echo: %s", text))
 		}
 		agentRunner = fake
-	} else {
+	} else if runnerType == "pty" {
 		log.Printf("[agent-bridge] Initializing PTYRunner for agy")
 		agentRunner = runner.NewPTYRunner()
+	} else {
+		log.Printf("[agent-bridge] Initializing CLIRunner for agy (reliable print/json mode)")
+		agentRunner = runner.NewCLIRunner()
 	}
 	defer agentRunner.Stop()
 
