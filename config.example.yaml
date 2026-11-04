@@ -1,0 +1,49 @@
+# agent-bridge Configuration
+# Copy this to ~/.config/agent-bridge/config.yaml or pass via --config <path>
+
+telegram:
+  # Telegram bot token from @BotFather (or set AGENT_BRIDGE_TELEGRAM_TOKEN env variable)
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  # Your numeric Telegram User ID (NOT your @username). Obtain from @userinfobot or @raw_data_bot.
+  allowed_user_id: 123456789
+
+# Configured workspace projects
+projects:
+  coachly:
+    path: "/home/favour/projects/coachly"
+    default_model: "gemini-3.8-flash-high"
+    auto_approve: false
+
+  agentpay:
+    path: "/home/favour/projects/agentpay"
+    default_model: "claude-sonnet-4-6"
+    auto_approve: false
+
+# Allowed models for /model switcher
+models:
+  - id: "gemini-3.8-flash-high"
+    display_name: "Gemini 3.8 Flash (High)"
+  - id: "gemini-3.8-flash-medium"
+    display_name: "Gemini 3.8 Flash (Medium)"
+  - id: "claude-sonnet-4-6"
+    display_name: "Claude Sonnet 4.6 (Thinking)"
+  - id: "claude-opus-4-6-thinking"
+    display_name: "Claude Opus 4.6 (Thinking)"
+  - id: "gpt-oss-120b-medium"
+    display_name: "GPT-OSS 120B (Medium)"
+
+# Limits and operational rules
+limits:
+  max_file_size_mb: 20
+  inbox_retention_days: 7
+  approval_timeout_minutes: 10
+  card_debounce_seconds: 3
+
+# Local SQLite storage location
+storage:
+  db_path: "~/.config/agent-bridge/bridge.db"
+
+# Defaults
+defaults:
+  project: "coachly"
+  verbosity: "normal" # quiet, normal, verbose

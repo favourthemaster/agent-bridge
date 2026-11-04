@@ -1,0 +1,17 @@
+[Unit]
+Description=agent-bridge Telegram Daemon for agy
+After=network.target
+
+[Service]
+Type=simple
+User=favour
+WorkingDirectory=/home/favour
+ExecStart=/home/favour/projects/agent-bridge/bin/agent-bridge --config /home/favour/.config/agent-bridge/config.yaml
+Restart=always
+RestartSec=5
+Environment=PATH=/home/favour/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

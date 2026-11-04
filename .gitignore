@@ -1,0 +1,17 @@
+# Binaries
+bin/
+*.exe
+*.test
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Agent bridge runtime folders
+.bridge/
+
+# Local configs with real tokens
+config.yaml
+.env
+.env.*
