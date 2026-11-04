@@ -437,8 +437,8 @@ func (bb *BridgeBot) renderCardUpdate(html string) error {
 	bb.mu.Lock()
 	defer bb.mu.Unlock()
 
-	// Suppress card if there are no steps yet and the card hasn't been sent
-	if bb.activeCard != nil && !bb.activeCard.HasSteps() && bb.cardMessageID == 0 {
+	trimmed := strings.TrimSpace(html)
+	if trimmed == "" {
 		return nil
 	}
 
@@ -449,7 +449,7 @@ func (bb *BridgeBot) renderCardUpdate(html string) error {
 		bb.isFirstCardSend = false
 		sent, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:              bb.cfg.Telegram.AllowedUserID,
-			Text:                html,
+			Text:                trimmed,
 			ParseMode:           models.ParseModeHTML,
 			DisableNotification: true,
 		})
@@ -462,7 +462,7 @@ func (bb *BridgeBot) renderCardUpdate(html string) error {
 	_, err := bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:    bb.cfg.Telegram.AllowedUserID,
 		MessageID: bb.cardMessageID,
-		Text:      html,
+		Text:      trimmed,
 		ParseMode: models.ParseModeHTML,
 	})
 	return err

@@ -15,31 +15,21 @@ func TestCardRenderSteps(t *testing.T) {
 	card.AddOrUpdateStep("3", "go test ./...", StepRunning, 0, 0, "")
 
 	html := card.RenderHTML()
-	if !strings.Contains(html, "<b>coachly</b>") {
-		t.Errorf("expected project name in bold, got:\n%s", html)
-	}
-	if !strings.Contains(html, "✔ read config/thresholds.yaml") {
+	if !strings.Contains(html, "✔ <code>read config/thresholds.yaml</code>") {
 		t.Errorf("expected completed step, got:\n%s", html)
 	}
-	if !strings.Contains(html, "▶ go test ./...") {
+	if !strings.Contains(html, "▶ <code>go test ./...</code>") {
 		t.Errorf("expected running step, got:\n%s", html)
 	}
 
 	// Update running step to failed
 	card.AddOrUpdateStep("3", "go test ./...", StepFailed, 5*time.Second, 1, "FAIL: TestConfigLoad\npanic: nil pointer")
 	htmlFailed := card.RenderHTML()
-	if !strings.Contains(htmlFailed, "✖ go test ./...  (5s) (exit 1)") {
+	if !strings.Contains(htmlFailed, "✖ <code>go test ./...</code> (5s) (exit 1)") {
 		t.Errorf("expected failed step with exit code, got:\n%s", htmlFailed)
 	}
 	if !strings.Contains(htmlFailed, "<pre><code>FAIL: TestConfigLoad") {
 		t.Errorf("expected stderr in pre code, got:\n%s", htmlFailed)
-	}
-
-	// Mark done
-	card.MarkDone("All done")
-	htmlDone := card.RenderHTML()
-	if !strings.Contains(htmlDone, "Done in") {
-		t.Errorf("expected 'Done in' in header, got:\n%s", htmlDone)
 	}
 }
 
@@ -55,10 +45,10 @@ func TestCardFolding(t *testing.T) {
 		t.Errorf("expected '+8 earlier steps' fold indicator, got:\n%s", html)
 	}
 	// Should not show step 1, but should show step 20
-	if strings.Contains(html, "✔ step 1\n") {
+	if strings.Contains(html, "✔ <code>step 1</code>\n") {
 		t.Errorf("step 1 should be folded, got:\n%s", html)
 	}
-	if !strings.Contains(html, "✔ step 20") {
+	if !strings.Contains(html, "✔ <code>step 20</code>") {
 		t.Errorf("step 20 should be visible, got:\n%s", html)
 	}
 }

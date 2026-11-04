@@ -120,7 +120,7 @@ func TestActivityCardFailure(t *testing.T) {
 	card.AddOrUpdateStep("t1", "go build ./...", activity.StepFailed, 4*time.Second, 1, "cmd/main.go:12: undefined: Foo\nexit status 1")
 
 	html := card.RenderHTML()
-	if !strings.Contains(html, "✖ go build ./...  (4s) (exit 1)") {
+	if !strings.Contains(html, "✖ <code>go build ./...</code> (4s) (exit 1)") {
 		t.Errorf("expected failed step indicator and exit code, got:\n%s", html)
 	}
 	if !strings.Contains(html, "<pre><code>cmd/main.go:12: undefined: Foo") {

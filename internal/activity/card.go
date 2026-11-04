@@ -87,41 +87,20 @@ func (c *Card) MarkDone(summary string) {
 	c.EndTime = time.Now()
 }
 
-// RenderHTML produces the Telegram HTML representation of the activity card.
+// RenderHTML produces the Telegram HTML representation of tool activity.
+// Only tool calls are rendered (no header card chrome).
 func (c *Card) RenderHTML() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
-	var elapsed time.Duration
-	if c.Done && !c.EndTime.IsZero() {
-		elapsed = c.EndTime.Sub(c.StartTime)
-	} else {
-		elapsed = now.Sub(c.StartTime)
-	}
-
-	elapsedStr := formatDuration(elapsed)
-
-	if c.Verbosity == "quiet" {
-		if c.Done {
-			return fmt.Sprintf("<b>%s</b> · Done in %s", formatter.EscapeHTML(c.ProjectName), elapsedStr)
-		}
-		return fmt.Sprintf("<b>%s</b> · running %s...", formatter.EscapeHTML(c.ProjectName), elapsedStr)
+	totalSteps := len(c.Steps)
+	if totalSteps == 0 {
+		return ""
 	}
 
 	var sb strings.Builder
-	// Header line
-	statusLine := fmt.Sprintf("running %s", elapsedStr)
-	if c.Done {
-		statusLine = fmt.Sprintf("Done in %s", elapsedStr)
-	}
-	sb.WriteString(fmt.Sprintf("<b>%s</b>  ·  model: <code>%s</code>  ·  %s\n",
-		formatter.EscapeHTML(c.ProjectName),
-		formatter.EscapeHTML(c.ModelName),
-		statusLine,
-	))
+	now := time.Now()
 
-	totalSteps := len(c.Steps)
 	startIdx := 0
 	if totalSteps > 12 {
 		startIdx = totalSteps - 12
@@ -133,25 +112,25 @@ func (c *Card) RenderHTML() string {
 		switch step.Status {
 		case StepRunning:
 			durSoFar := now.Sub(step.StartTime)
-			sb.WriteString(fmt.Sprintf("▶ %s  (%s so far)\n",
+			sb.WriteString(fmt.Sprintf("▶ <code>%s</code> <i>(%s)</i>\n",
 				formatter.EscapeHTML(step.Label),
 				formatDuration(durSoFar),
 			))
 		case StepDone:
 			if step.Duration > 0 {
-				sb.WriteString(fmt.Sprintf("✔ %s  (%s)\n",
+				sb.WriteString(fmt.Sprintf("✔ <code>%s</code> <i>(%s)</i>\n",
 					formatter.EscapeHTML(step.Label),
 					formatDuration(step.Duration),
 				))
 			} else {
-				sb.WriteString(fmt.Sprintf("✔ %s\n", formatter.EscapeHTML(step.Label)))
+				sb.WriteString(fmt.Sprintf("✔ <code>%s</code>\n", formatter.EscapeHTML(step.Label)))
 			}
 		case StepFailed:
 			durStr := ""
 			if step.Duration > 0 {
-				durStr = fmt.Sprintf("  (%s)", formatDuration(step.Duration))
+				durStr = fmt.Sprintf(" (%s)", formatDuration(step.Duration))
 			}
-			sb.WriteString(fmt.Sprintf("✖ %s%s (exit %d)\n",
+			sb.WriteString(fmt.Sprintf("✖ <code>%s</code>%s (exit %d)\n",
 				formatter.EscapeHTML(step.Label),
 				durStr,
 				step.ExitCode,
