@@ -133,10 +133,17 @@ func (r *PTYRunner) readLoop(ptmx *os.File, cmd *exec.Cmd) {
 
 	r.mu.Lock()
 	closed := r.closed
+	cb := r.eventCb
 	r.mu.Unlock()
 
 	// If not intentionally closed by Stop(), automatically respawn (always running)
 	if !closed {
+		if cb != nil {
+			cb(parser.ParsedEvent{
+				Type: parser.EventError,
+				Text: "agy runner exited unexpectedly; supervisor respawning...",
+			})
+		}
 		time.Sleep(1 * time.Second)
 		r.mu.Lock()
 		if !r.closed {

@@ -327,3 +327,67 @@ func TestQueueWhileBusy(t *testing.T) {
 		t.Errorf("expected task 3 drained, got: %+v", drainedItem3)
 	}
 }
+
+// 11. Runner Error & Crash Event Propagation
+func TestRunnerErrorEventPropagation(t *testing.T) {
+	_, fake, _, _ := setupTestBridge(t)
+
+	var receivedError string
+	var mu sync.Mutex
+
+	fake.OnEvent(func(e parser.ParsedEvent) {
+		if e.Type == parser.EventError {
+			mu.Lock()
+			receivedError = e.Text
+			mu.Unlock()
+		}
+	})
+
+	fake.EmitEvent(parser.ParsedEvent{
+		Type: parser.EventError,
+		Text: "agy runner exited unexpectedly; supervisor respawning...",
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	mu.Lock()
+	errText := receivedError
+	mu.Unlock()
+
+	if !strings.Contains(errText, "supervisor respawning") {
+		t.Errorf("expected supervisor respawn error event, got: %q", errText)
+	}
+}
+
+// 12. Inbox Pruning Integration Test
+func TestInboxPruningIntegration(t *testing.T) {
+	_, _, _, tempDir := setupTestBridge(t)
+
+	// Create old directory inside .bridge/inbox
+	oldFolder := filepath.Join(tempDir, ".bridge", "inbox", "2024-01-01")
+	_ = os.MkdirAll(oldFolder, 0755)
+	_ = os.WriteFile(filepath.Join(oldFolder, "expired.jpg"), []byte("data"), 0644)
+
+	// Create recent directory
+	recentFolder := filepath.Join(tempDir, ".bridge", "inbox", time.Now().Format("2006-01-02"))
+	_ = os.MkdirAll(recentFolder, 0755)
+	_ = os.WriteFile(filepath.Join(recentFolder, "fresh.jpg"), []byte("fresh"), 0644)
+
+	count, err := media.PruneInbox(tempDir, 7)
+	if err != nil {
+		t.Fatalf("pruning failed: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 pruned directory, got %d", count)
+	}
+
+	if _, err := os.Stat(oldFolder); !os.IsNotExist(err) {
+		t.Errorf("expected oldFolder removed, but exists")
+	}
+
+	if _, err := os.Stat(recentFolder); err != nil {
+		t.Errorf("expected recentFolder to remain, got %v", err)
+	}
+}
+

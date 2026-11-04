@@ -44,6 +44,9 @@ type BridgeBot struct {
 	cardMessageID   int
 	isFirstCardSend bool
 
+	turnStartTime  time.Time
+	longTaskStopCh chan struct{}
+
 	mu sync.Mutex
 }
 
@@ -150,6 +153,13 @@ func NewBridgeBot(
 	// Start outbox watcher for active project
 	bb.initOutboxWatcher(pCfg.Path)
 
+	// Prune old inbox files on startup
+	retention := cfg.Limits.InboxRetentionDays
+	if retention <= 0 {
+		retention = 7
+	}
+	_, _ = media.PruneInbox(pCfg.Path, retention)
+
 	// Wire runner events
 	r.OnEvent(bb.handleRunnerEvent)
 
@@ -159,6 +169,14 @@ func NewBridgeBot(
 func (bb *BridgeBot) Start(ctx context.Context) error {
 	// Register commands in Telegram menu
 	_ = bb.registerCommands(ctx)
+
+	// Send silent session connected notice
+	_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:              bb.cfg.Telegram.AllowedUserID,
+		Text:                fmt.Sprintf("🟢 <b>Bridge connected</b> · Project: <b>%s</b> · Model: <code>%s</code>", formatter.EscapeHTML(bb.curProject), formatter.EscapeHTML(bb.curSession.Model)),
+		ParseMode:           models.ParseModeHTML,
+		DisableNotification: true,
+	})
 
 	// Start runner with initial session
 	pCfg := bb.cfg.Projects[bb.curProject]
@@ -331,6 +349,13 @@ func (bb *BridgeBot) startTurnUI() {
 	bb.activeCard = activity.NewCard(bb.curProject, bb.curSession.Model, bb.curSession.Verbosity)
 	bb.cardMessageID = 0
 	bb.isFirstCardSend = true
+	bb.turnStartTime = time.Now()
+
+	if bb.longTaskStopCh != nil {
+		close(bb.longTaskStopCh)
+	}
+	stopCh := make(chan struct{})
+	bb.longTaskStopCh = stopCh
 
 	debounceInterval := time.Duration(bb.cfg.Limits.CardDebounceSeconds) * time.Second
 	if debounceInterval <= 0 {
@@ -343,6 +368,33 @@ func (bb *BridgeBot) startTurnUI() {
 	bb.mu.Unlock()
 
 	bb.actionTicker.Start()
+
+	// Task running longer than 10 minutes notice (repeats every 10 min, silent)
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case t := <-ticker.C:
+				bb.mu.Lock()
+				proj := bb.curProject
+				start := bb.turnStartTime
+				bb.mu.Unlock()
+
+				elapsed := t.Sub(start).Round(time.Minute)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID:              bb.cfg.Telegram.AllowedUserID,
+					Text:                fmt.Sprintf("⏳ <i>Task still running on <b>%s</b> (%s elapsed)</i>", formatter.EscapeHTML(proj), elapsed),
+					ParseMode:           models.ParseModeHTML,
+					DisableNotification: true,
+				})
+				cancel()
+			}
+		}
+	}()
 }
 
 func (bb *BridgeBot) renderCardUpdate(html string) error {
@@ -421,6 +473,16 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 
 	case parser.EventPromptReady:
 		bb.finishTurn(ev.Text)
+
+	case parser.EventError:
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:              bb.cfg.Telegram.AllowedUserID,
+			Text:                fmt.Sprintf("⚠️ <b>Runner Alert</b>: %s", formatter.EscapeHTML(ev.Text)),
+			ParseMode:           models.ParseModeHTML,
+			DisableNotification: false,
+		})
 	}
 }
 
@@ -428,6 +490,10 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 	bb.actionTicker.Stop()
 
 	bb.mu.Lock()
+	if bb.longTaskStopCh != nil {
+		close(bb.longTaskStopCh)
+		bb.longTaskStopCh = nil
+	}
 	if bb.activeCard != nil {
 		bb.activeCard.MarkDone("Done")
 	}

@@ -150,3 +150,35 @@ func TestOutboxWatcher(t *testing.T) {
 		t.Errorf("expected file to exist in sent directory: %v", err)
 	}
 }
+
+func TestPruneInbox(t *testing.T) {
+	tempProject := t.TempDir()
+
+	// Old folder (10 days old)
+	oldDir := filepath.Join(tempProject, ".bridge", "inbox", "2020-01-01")
+	_ = os.MkdirAll(oldDir, 0755)
+	_ = os.WriteFile(filepath.Join(oldDir, "old.txt"), []byte("old file"), 0644)
+
+	// Recent folder
+	todayDir := filepath.Join(tempProject, ".bridge", "inbox", time.Now().Format("2006-01-02"))
+	_ = os.MkdirAll(todayDir, 0755)
+	_ = os.WriteFile(filepath.Join(todayDir, "new.txt"), []byte("new file"), 0644)
+
+	pruned, err := PruneInbox(tempProject, 7)
+	if err != nil {
+		t.Fatalf("PruneInbox error: %v", err)
+	}
+
+	if pruned < 1 {
+		t.Errorf("expected at least 1 pruned entry, got %d", pruned)
+	}
+
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("expected oldDir to be deleted, but still exists")
+	}
+
+	if _, err := os.Stat(todayDir); err != nil {
+		t.Errorf("expected todayDir to remain, got err: %v", err)
+	}
+}
+

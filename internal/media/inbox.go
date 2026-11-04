@@ -120,3 +120,57 @@ func BuildPromptForFiles(caption string, files []SavedFile) string {
 
 	return strings.TrimRight(sb.String(), "\n")
 }
+
+// PruneInbox removes files and directories from <projectDir>/.bridge/inbox older than retentionDays.
+func PruneInbox(projectDir string, retentionDays int) (int, error) {
+	if retentionDays <= 0 {
+		retentionDays = 7
+	}
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	inboxDir := filepath.Join(projectDir, ".bridge", "inbox")
+	if _, err := os.Stat(inboxDir); os.IsNotExist(err) {
+		return 0, nil
+	}
+
+	prunedCount := 0
+	entries, err := os.ReadDir(inboxDir)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, entry := range entries {
+		entryPath := filepath.Join(inboxDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Try parsing date folder name "YYYY-MM-DD"
+		if entry.IsDir() {
+			if folderDate, err := time.Parse("2006-01-02", entry.Name()); err == nil {
+				if folderDate.Before(cutoff) {
+					if os.RemoveAll(entryPath) == nil {
+						prunedCount++
+					}
+					continue
+				}
+			}
+		}
+
+		// Fallback to ModTime check
+		if info.ModTime().Before(cutoff) {
+			if entry.IsDir() {
+				if os.RemoveAll(entryPath) == nil {
+					prunedCount++
+				}
+			} else {
+				if os.Remove(entryPath) == nil {
+					prunedCount++
+				}
+			}
+		}
+	}
+
+	return prunedCount, nil
+}
+
