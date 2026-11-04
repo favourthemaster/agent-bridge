@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -356,11 +357,23 @@ func (bb *BridgeBot) submitInstruction(text string) {
 	}
 
 	if res.Queued {
+		var kb *models.InlineKeyboardMarkup
+		if res.MessageID > 0 {
+			kb = &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{
+						{Text: "⚡ Force Run Now", CallbackData: fmt.Sprintf("queue:force:%d", res.MessageID)},
+						{Text: "🗑 Cancel", CallbackData: fmt.Sprintf("queue:cancel:%d", res.MessageID)},
+					},
+				},
+			}
+		}
 		_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:              bb.cfg.Telegram.AllowedUserID,
 			Text:                fmt.Sprintf("⏳ <i>Queued (%d ahead)</i>", res.AheadCount),
 			ParseMode:           models.ParseModeHTML,
 			DisableNotification: true,
+			ReplyMarkup:         kb,
 		})
 		return
 	}
@@ -704,67 +717,104 @@ func (bb *BridgeBot) finishTurn(finalText, thinking string) {
 	// Redaction pass
 	safeAnswer := bb.redactor.Redact(rawAnswer)
 
-	// Format as HTML
-	formattedHTML := formatter.MarkdownToHTML(safeAnswer)
-
-	// Prepend collapsible thinking trace if present and not in quiet mode
+	// Build rich markdown message (preserving native GFM tables and formatting)
+	richMarkdown := safeAnswer
 	if strings.TrimSpace(thinking) != "" && bb.curSession.Verbosity != "quiet" {
 		safeThinking := bb.redactor.Redact(thinking)
 		traceHTML := formatter.FormatThinkingTrace(safeThinking)
-		formattedHTML = traceHTML + formattedHTML
+		richMarkdown = traceHTML + "\n\n" + safeAnswer
 	}
-
-	// Split message if > 4,096 chars
-	chunks := formatter.SplitMessage(formattedHTML, 4000)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log.Printf("[BridgeBot] finishTurn: streamMsgID=%d, dispatching %d response chunk(s) to Telegram", streamMsgID, len(chunks))
+	log.Printf("[BridgeBot] finishTurn: streamMsgID=%d, dispatching rich response (length: %d)", streamMsgID, len(richMarkdown))
 
-	if streamMsgID > 0 && len(chunks) > 0 {
+	// Try sending via RichMessage for native tables, headings, and 32KB capacity
+	sentRich := false
+	if streamMsgID > 0 {
 		_, err := bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:    bb.cfg.Telegram.AllowedUserID,
 			MessageID: streamMsgID,
-			Text:      chunks[0],
-			ParseMode: models.ParseModeHTML,
+			RichMessage: &models.InputRichMessage{
+				Markdown: richMarkdown,
+			},
 		})
-		if err != nil {
-			plain := formatter.StripHTML(chunks[0])
-			_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
-				ChatID:    bb.cfg.Telegram.AllowedUserID,
-				MessageID: streamMsgID,
-				Text:      plain,
-			})
+		if err == nil {
+			sentRich = true
+		} else {
+			log.Printf("[BridgeBot] EditMessageText with rich_message failed: %v", err)
+		}
+	}
+
+	if !sentRich {
+		_, err := bb.b.SendRichMessage(ctx, &bot.SendRichMessageParams{
+			ChatID: bb.cfg.Telegram.AllowedUserID,
+			RichMessage: models.InputRichMessage{
+				Markdown: richMarkdown,
+			},
+		})
+		if err == nil {
+			sentRich = true
+		} else {
+			log.Printf("[BridgeBot] SendRichMessage failed, falling back to chunked HTML: %v", err)
+		}
+	}
+
+	// Fallback to traditional HTML chunks if RichMessage failed
+	if !sentRich {
+		formattedHTML := formatter.MarkdownToHTML(safeAnswer)
+		if strings.TrimSpace(thinking) != "" && bb.curSession.Verbosity != "quiet" {
+			safeThinking := bb.redactor.Redact(thinking)
+			traceHTML := formatter.FormatThinkingTrace(safeThinking)
+			formattedHTML = traceHTML + formattedHTML
 		}
 
-		for _, chunk := range chunks[1:] {
-			_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+		chunks := formatter.SplitMessage(formattedHTML, 4000)
+		if streamMsgID > 0 && len(chunks) > 0 {
+			_, err := bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
 				ChatID:    bb.cfg.Telegram.AllowedUserID,
-				Text:      chunk,
+				MessageID: streamMsgID,
+				Text:      chunks[0],
 				ParseMode: models.ParseModeHTML,
 			})
 			if err != nil {
-				plain := formatter.StripHTML(chunk)
-				_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: bb.cfg.Telegram.AllowedUserID,
-					Text:   plain,
+				plain := formatter.StripHTML(chunks[0])
+				_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+					ChatID:    bb.cfg.Telegram.AllowedUserID,
+					MessageID: streamMsgID,
+					Text:      plain,
 				})
 			}
-		}
-	} else {
-		for _, chunk := range chunks {
-			_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID:    bb.cfg.Telegram.AllowedUserID,
-				Text:      chunk,
-				ParseMode: models.ParseModeHTML,
-			})
-			if err != nil {
-				plain := formatter.StripHTML(chunk)
-				_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: bb.cfg.Telegram.AllowedUserID,
-					Text:   plain,
+
+			for _, chunk := range chunks[1:] {
+				_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID:    bb.cfg.Telegram.AllowedUserID,
+					Text:      chunk,
+					ParseMode: models.ParseModeHTML,
 				})
+				if err != nil {
+					plain := formatter.StripHTML(chunk)
+					_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+						ChatID: bb.cfg.Telegram.AllowedUserID,
+						Text:   plain,
+					})
+				}
+			}
+		} else {
+			for _, chunk := range chunks {
+				_, err := bb.b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID:    bb.cfg.Telegram.AllowedUserID,
+					Text:      chunk,
+					ParseMode: models.ParseModeHTML,
+				})
+				if err != nil {
+					plain := formatter.StripHTML(chunk)
+					_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+						ChatID: bb.cfg.Telegram.AllowedUserID,
+						Text:   plain,
+					})
+				}
 			}
 		}
 	}
@@ -812,6 +862,58 @@ func (bb *BridgeBot) handleCallback(ctx context.Context, cb *models.CallbackQuer
 			Text:      fmt.Sprintf("✔ Switched model to <code>%s</code> for project <b>%s</b>.", formatter.EscapeHTML(modelID), formatter.EscapeHTML(bb.curProject)),
 			ParseMode: models.ParseModeHTML,
 		})
+		return
+	}
+
+	// Handle force run queued item
+	if strings.HasPrefix(data, "queue:force:") {
+		idStr := strings.TrimPrefix(data, "queue:force:")
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		_, _ = bb.b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "⚡ Interrupting current task and running instruction now...",
+		})
+
+		msgID := 0
+		if cb.Message.Message != nil {
+			msgID = cb.Message.Message.ID
+		}
+		_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    bb.cfg.Telegram.AllowedUserID,
+			MessageID: msgID,
+			Text:      "⚡ <b>Interrupted running task. Executing this instruction now!</b>",
+			ParseMode: models.ParseModeHTML,
+		})
+
+		_ = bb.db.PrioritizeMessage(id)
+		if bb.runner != nil {
+			_ = bb.runner.Interrupt()
+		}
+		return
+	}
+
+	// Handle cancel queued item
+	if strings.HasPrefix(data, "queue:cancel:") {
+		idStr := strings.TrimPrefix(data, "queue:cancel:")
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		_, _ = bb.b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Cancelled instruction.",
+		})
+
+		msgID := 0
+		if cb.Message.Message != nil {
+			msgID = cb.Message.Message.ID
+		}
+		_, _ = bb.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    bb.cfg.Telegram.AllowedUserID,
+			MessageID: msgID,
+			Text:      "❌ <i>Instruction cancelled.</i>",
+			ParseMode: models.ParseModeHTML,
+		})
+
+		_ = bb.db.CancelMessage(id)
+		return
 	}
 }
 

@@ -91,6 +91,7 @@ func (d *DB) migrate() error {
 		text TEXT NOT NULL,
 		files_json TEXT,
 		status TEXT NOT NULL DEFAULT 'pending',
+		priority INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	);
 
@@ -121,6 +122,10 @@ func (d *DB) migrate() error {
 	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
+
+	// Ensure priority column exists on existing installations
+	_, _ = d.db.Exec("ALTER TABLE message_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+
 	return nil
 }
 
@@ -279,9 +284,43 @@ func (d *DB) GetNextPendingMessage(sessionID string) (*QueueItem, error) {
 		SELECT id, session_id, user_id, text, files_json, status, created_at
 		FROM message_queue
 		WHERE session_id = ? AND status = 'pending'
-		ORDER BY id ASC LIMIT 1
+		ORDER BY priority DESC, id ASC LIMIT 1
 	`, sessionID).Scan(&item.ID, &item.SessionID, &item.UserID, &item.Text, &files, &item.Status, &item.CreatedAt)
 
+	if err != nil {
+		return nil, err
+	}
+	if files.Valid {
+		item.FilesJSON = files.String
+	}
+	return &item, nil
+}
+
+func (d *DB) PrioritizeMessage(id int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec("UPDATE message_queue SET priority = 100 WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) CancelMessage(id int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec("UPDATE message_queue SET status = 'cancelled' WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) GetMessageByID(id int64) (*QueueItem, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var item QueueItem
+	var files sql.NullString
+	err := d.db.QueryRow(`
+		SELECT id, session_id, user_id, text, files_json, status, created_at
+		FROM message_queue
+		WHERE id = ?
+	`, id).Scan(&item.ID, &item.SessionID, &item.UserID, &item.Text, &files, &item.Status, &item.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

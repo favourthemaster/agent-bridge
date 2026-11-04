@@ -71,6 +71,33 @@ func TestDBSessionsAndQueue(t *testing.T) {
 	if err != nil || item2.ID != id2 || item2.Text != "second message" {
 		t.Fatalf("expected item2, got %+v", item2)
 	}
+	_ = database.MarkMessageStatus(id2, "done")
+
+	// Test prioritize
+	id3, _, err := database.EnqueueMessage(sess.ID, 12345, "third message", "")
+	if err != nil {
+		t.Fatalf("enqueue 3 failed: %v", err)
+	}
+	id4, _, err := database.EnqueueMessage(sess.ID, 12345, "fourth message", "")
+	if err != nil {
+		t.Fatalf("enqueue 4 failed: %v", err)
+	}
+	// Prioritize id4 over id3
+	if err := database.PrioritizeMessage(id4); err != nil {
+		t.Fatalf("prioritize failed: %v", err)
+	}
+	nextPrio, err := database.GetNextPendingMessage(sess.ID)
+	if err != nil || nextPrio.ID != id4 {
+		t.Fatalf("expected prioritized id4 (%d), got id %d", id4, nextPrio.ID)
+	}
+	// Test cancel
+	if err := database.CancelMessage(id4); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+	nextAfterCancel, err := database.GetNextPendingMessage(sess.ID)
+	if err != nil || nextAfterCancel.ID != id3 {
+		t.Fatalf("expected next after cancel id3 (%d), got id %d", id3, nextAfterCancel.ID)
+	}
 
 	// 3. Approvals
 	expiresAt := time.Now().Add(10 * time.Minute).Unix()
