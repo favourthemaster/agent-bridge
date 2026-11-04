@@ -491,10 +491,11 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 
 		bb.actionTicker.Stop()
 		bb.mu.Lock()
-		if bb.cardDebouncer != nil {
-			bb.cardDebouncer.Flush()
-		}
+		deb := bb.cardDebouncer
 		bb.mu.Unlock()
+		if deb != nil {
+			deb.Flush()
+		}
 
 		timeout := time.Duration(bb.cfg.Limits.ApprovalTimeoutMinutes) * time.Minute
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -514,10 +515,11 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 		if bb.activeCard != nil {
 			bb.activeCard.MarkDone("Failed")
 		}
-		if bb.cardDebouncer != nil {
-			bb.cardDebouncer.Flush()
-		}
+		deb := bb.cardDebouncer
 		bb.mu.Unlock()
+		if deb != nil {
+			deb.Flush()
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -553,10 +555,12 @@ func (bb *BridgeBot) finishTurn(finalText string) {
 	if bb.activeCard != nil {
 		bb.activeCard.MarkDone("Done")
 	}
-	if bb.cardDebouncer != nil {
-		bb.cardDebouncer.Flush()
-	}
+	deb := bb.cardDebouncer
 	bb.mu.Unlock()
+
+	if deb != nil {
+		deb.Flush()
+	}
 
 	// Prepare outbound message
 	rawAnswer := strings.TrimSpace(finalText)
