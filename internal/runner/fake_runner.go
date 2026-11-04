@@ -12,6 +12,7 @@ type ScriptedAction func(r *FakeRunner)
 type FakeRunner struct {
 	mu           sync.Mutex
 	isBusy       bool
+	autoApprove  bool
 	eventCb      func(e parser.ParsedEvent)
 	Instructions []string
 	Approvals    []bool
@@ -42,6 +43,18 @@ func (f *FakeRunner) IsBusy() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.isBusy
+}
+
+func (f *FakeRunner) SetAutoApprove(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.autoApprove = enabled
+}
+
+func (f *FakeRunner) IsAutoApprove() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.autoApprove
 }
 
 func (f *FakeRunner) SetBusy(b bool) {

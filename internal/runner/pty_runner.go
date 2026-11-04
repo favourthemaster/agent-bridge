@@ -22,9 +22,10 @@ type PTYRunner struct {
 	closed    bool
 	cwd       string
 	model     string
-	convID    string
-	restartCh chan struct{}
-	mu        sync.Mutex
+	convID      string
+	autoApprove bool
+	restartCh   chan struct{}
+	mu          sync.Mutex
 }
 
 func NewPTYRunner() *PTYRunner {
@@ -46,6 +47,18 @@ func (r *PTYRunner) IsBusy() bool {
 	return r.isBusy
 }
 
+func (r *PTYRunner) SetAutoApprove(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoApprove = enabled
+}
+
+func (r *PTYRunner) IsAutoApprove() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.autoApprove
+}
+
 func (r *PTYRunner) Start(cwd, model, conversationID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,6 +78,9 @@ func (r *PTYRunner) spawnProcess() error {
 	}
 	if r.convID != "" {
 		args = append(args, "--conversation", r.convID)
+	}
+	if r.autoApprove {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	cmd := exec.Command("agy", args...)

@@ -13,4 +13,6 @@ type Runner interface {
 	Stop() error
 	OnEvent(cb func(e parser.ParsedEvent))
 	IsBusy() bool
+	SetAutoApprove(enabled bool)
+	IsAutoApprove() bool
 }

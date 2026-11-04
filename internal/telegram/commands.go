@@ -78,6 +78,9 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, cmdText string) bool
 	case "/get":
 		c.cmdGet(ctx, args)
 		return true
+	case "/autoapprove":
+		c.cmdAutoApprove(ctx, args)
+		return true
 	case "/quiet":
 		c.cmdSetVerbosity(ctx, "quiet")
 		return true
@@ -119,6 +122,7 @@ func (c *CommandHandler) cmdHelp(ctx context.Context) {
 /get &lt;path&gt; - Send a file from the project folder
 /queue - Show messages waiting in the queue
 /queue clear - Clear all waiting messages
+/autoapprove [on|off] - Toggle unattended tool execution
 /help - Show this command list`
 
 	_, _ = c.sendMessage(ctx, &bot.SendMessageParams{
@@ -134,6 +138,11 @@ func (c *CommandHandler) cmdStatus(ctx context.Context) {
 		busyStr = "Busy (executing task)"
 	}
 
+	autoApproveStr := "Disabled (prompts for approvals)"
+	if c.runner != nil && c.runner.IsAutoApprove() {
+		autoApproveStr = "Enabled (unattended execution)"
+	}
+
 	pCfg := c.cfg.Projects[c.project]
 	msg := fmt.Sprintf(`📊 <b>Bridge Status</b>
 
@@ -141,12 +150,14 @@ func (c *CommandHandler) cmdStatus(ctx context.Context) {
 <b>Path:</b> <code>%s</code>
 <b>Model:</b> <code>%s</code>
 <b>Verbosity:</b> <code>%s</code>
+<b>Auto-Approve:</b> %s
 <b>Runner State:</b> %s
 <b>Session ID:</b> <code>%s</code>`,
 		formatter.EscapeHTML(c.project),
 		formatter.EscapeHTML(pCfg.Path),
 		formatter.EscapeHTML(c.session.Model),
 		formatter.EscapeHTML(c.session.Verbosity),
+		autoApproveStr,
 		busyStr,
 		formatter.EscapeHTML(c.session.ID),
 	)
@@ -307,12 +318,45 @@ func (c *CommandHandler) cmdProject(ctx context.Context, args []string) {
 
 	c.SetSession(sess, target)
 	if c.runner != nil {
+		c.runner.SetAutoApprove(pCfg.AutoApprove || c.cfg.Defaults.AutoApprove)
 		_ = c.runner.Start(pCfg.Path, sess.Model, sess.ConversationID)
 	}
 
 	_, _ = c.sendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    c.chatID,
 		Text:      fmt.Sprintf("📂 <b>Switched to project %s</b>\nPath: <code>%s</code>\nModel: <code>%s</code>", formatter.EscapeHTML(target), formatter.EscapeHTML(pCfg.Path), formatter.EscapeHTML(sess.Model)),
+		ParseMode: models.ParseModeHTML,
+	})
+}
+
+func (c *CommandHandler) cmdAutoApprove(ctx context.Context, args []string) {
+	if len(args) == 0 {
+		status := "Disabled"
+		if c.runner != nil && c.runner.IsAutoApprove() {
+			status = "Enabled"
+		}
+		_, _ = c.sendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    c.chatID,
+			Text:      fmt.Sprintf("⚡ <b>Auto-Approve:</b> %s\n\n<i>Use <code>/autoapprove on</code> or <code>/autoapprove off</code> to change.</i>", status),
+			ParseMode: models.ParseModeHTML,
+		})
+		return
+	}
+
+	mode := strings.ToLower(args[0])
+	enabled := mode == "on" || mode == "true" || mode == "1" || mode == "enable" || mode == "yes"
+	if c.runner != nil {
+		c.runner.SetAutoApprove(enabled)
+	}
+
+	statusText := "Disabled"
+	if enabled {
+		statusText = "Enabled (tool permissions will be granted automatically)"
+	}
+
+	_, _ = c.sendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    c.chatID,
+		Text:      fmt.Sprintf("⚡ <b>Auto-Approve set to:</b> %s", statusText),
 		ParseMode: models.ParseModeHTML,
 	})
 }

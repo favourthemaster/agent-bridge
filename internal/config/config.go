@@ -46,8 +46,9 @@ type StorageConfig struct {
 }
 
 type DefaultsConfig struct {
-	Project   string `yaml:"project"`
-	Verbosity string `yaml:"verbosity"` // quiet, normal, verbose
+	Project     string `yaml:"project"`
+	Verbosity   string `yaml:"verbosity"` // quiet, normal, verbose
+	AutoApprove bool   `yaml:"auto_approve"`
 }
 
 // Load loads the configuration from a YAML file, merging environment variables.

@@ -128,6 +128,9 @@ func NewBridgeBot(
 		q.SetSessionID(sess.ID)
 	}
 
+	// Configure initial auto-approve state on runner
+	r.SetAutoApprove(pCfg.AutoApprove || cfg.Defaults.AutoApprove)
+
 	// Initialize Bot client
 	opts := []bot.Option{
 		bot.WithMiddlewares(AuthMiddleware(cfg.Telegram.AllowedUserID)),
@@ -195,6 +198,7 @@ func (bb *BridgeBot) registerCommands(ctx context.Context) error {
 		{Command: "model", Description: "Switch AI model"},
 		{Command: "queue", Description: "View or clear instruction queue"},
 		{Command: "get", Description: "Download a file from the project"},
+		{Command: "autoapprove", Description: "Toggle unattended auto-approval mode"},
 		{Command: "quiet", Description: "Set progress verbosity to quiet"},
 		{Command: "normal", Description: "Set progress verbosity to normal"},
 		{Command: "verbose", Description: "Set progress verbosity to verbose"},
@@ -459,6 +463,19 @@ func (bb *BridgeBot) handleRunnerEvent(ev parser.ParsedEvent) {
 		}
 
 	case parser.EventApprovalReq:
+		if bb.runner.IsAutoApprove() {
+			_ = bb.runner.SendApprovalResponse(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:              bb.cfg.Telegram.AllowedUserID,
+				Text:                fmt.Sprintf("⚡ <i>Auto-Approved:</i> <code>%s</code>", formatter.EscapeHTML(ev.Text)),
+				ParseMode:           models.ParseModeHTML,
+				DisableNotification: true,
+			})
+			return
+		}
+
 		bb.actionTicker.Stop()
 		bb.mu.Lock()
 		if bb.cardDebouncer != nil {

@@ -391,3 +391,45 @@ func TestInboxPruningIntegration(t *testing.T) {
 	}
 }
 
+// 13. Auto-Approve Mode Test
+func TestAutoApproveMode(t *testing.T) {
+	_, fake, _, _ := setupTestBridge(t)
+
+	fake.SetAutoApprove(true)
+	if !fake.IsAutoApprove() {
+		t.Fatalf("expected auto-approve enabled")
+	}
+
+	var approved atomic.Bool
+	fake.OnInstruction = func(text string, r *runner.FakeRunner) {
+		// Emit approval request
+		r.EmitEvent(parser.ParsedEvent{
+			Type: parser.EventApprovalReq,
+			ID:   "app_auto_1",
+			Text: "rm -rf build/",
+		})
+	}
+
+	fake.OnEvent(func(e parser.ParsedEvent) {
+		if e.Type == parser.EventApprovalReq {
+			if fake.IsAutoApprove() {
+				_ = fake.SendApprovalResponse(true)
+				approved.Store(true)
+			}
+		}
+	})
+
+	_ = fake.WriteInstruction("clean build")
+
+	time.Sleep(20 * time.Millisecond)
+
+	if !approved.Load() {
+		t.Errorf("expected permission to be auto-approved immediately")
+	}
+
+	if len(fake.Approvals) == 0 || !fake.Approvals[len(fake.Approvals)-1] {
+		t.Errorf("expected approval recorded in runner, got: %+v", fake.Approvals)
+	}
+}
+
+

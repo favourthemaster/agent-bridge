@@ -47,3 +47,5 @@ storage:
 defaults:
   project: "coachly"
   verbosity: "normal" # quiet, normal, verbose
+  # Set to true to run agy with --dangerously-skip-permissions for 100% unattended execution
+  auto_approve: true
