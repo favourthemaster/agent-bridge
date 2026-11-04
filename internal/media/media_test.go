@@ -56,6 +56,22 @@ func TestInboxAndAlbumBatcher(t *testing.T) {
 	if !strings.Contains(prompt, "Inspect these screenshots") || !strings.Contains(prompt, "Attached files:") {
 		t.Errorf("unexpected prompt: %s", prompt)
 	}
+
+	// Test voice note prompt treatment
+	voiceFile := SavedFile{
+		Path:     "/tmp/voice_note.ogg",
+		Filename: "voice_note.ogg",
+		MimeType: "audio/ogg",
+		Size:     1024,
+		IsVoice:  true,
+	}
+	voicePrompt := BuildPromptForFiles("", []SavedFile{voiceFile})
+	if !strings.Contains(voicePrompt, "The user sent a voice message") {
+		t.Errorf("expected voice note prompt, got: %s", voicePrompt)
+	}
+	if strings.Contains(voicePrompt, "Describe what this is") {
+		t.Errorf("voice note should not be treated as generic file inspection: %s", voicePrompt)
+	}
 }
 
 func TestValidateGetPath(t *testing.T) {

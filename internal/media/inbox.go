@@ -18,6 +18,7 @@ type SavedFile struct {
 	Filename string
 	MimeType string
 	Size     int64
+	IsVoice  bool
 }
 
 // SaveInboxFile writes an incoming file to <projectDir>/.bridge/inbox/<YYYY-MM-DD>/<filename>.
@@ -107,6 +108,17 @@ func (b *AlbumBatcher) Add(file SavedFile, caption string) {
 // BuildPromptForFiles creates a clean instruction for agy referencing received files.
 func BuildPromptForFiles(caption string, files []SavedFile) string {
 	var sb strings.Builder
+
+	// If this is a single voice message from the user, treat it as direct conversational input
+	if len(files) == 1 && (files[0].IsVoice || strings.HasPrefix(files[0].Filename, "voice_note")) {
+		if strings.TrimSpace(caption) != "" {
+			sb.WriteString(caption + "\n\n")
+		}
+		sb.WriteString("The user sent a voice message. Listen to the audio file and respond directly to what the user said as a normal conversational turn (or execute whatever instruction the user spoke). Do not describe the file format or ask what to do with the file; respond directly to the spoken message.\n\n")
+		sb.WriteString(fmt.Sprintf("Audio file:\n- Path: %s\n", files[0].Path))
+		return strings.TrimRight(sb.String(), "\n")
+	}
+
 	if strings.TrimSpace(caption) != "" {
 		sb.WriteString(caption + "\n\n")
 	} else {

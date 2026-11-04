@@ -314,7 +314,7 @@ func (bb *BridgeBot) handleUpdate(ctx context.Context, b *bot.Bot, update *model
 
 	// Check for voice note / audio / photo / document
 	if msg.Voice != nil {
-		bb.downloadAndQueueMedia(ctx, msg.Voice.FileID, "voice_note.ogg", msg.Caption)
+		bb.downloadAndQueueMedia(ctx, msg.Voice.FileID, "voice_note.ogg", msg.Caption, true)
 		return
 	}
 	if msg.Audio != nil {
@@ -322,17 +322,17 @@ func (bb *BridgeBot) handleUpdate(ctx context.Context, b *bot.Bot, update *model
 		if name == "" {
 			name = "audio.mp3"
 		}
-		bb.downloadAndQueueMedia(ctx, msg.Audio.FileID, name, msg.Caption)
+		bb.downloadAndQueueMedia(ctx, msg.Audio.FileID, name, msg.Caption, false)
 		return
 	}
 	if len(msg.Photo) > 0 {
 		// Get highest resolution photo
 		photo := msg.Photo[len(msg.Photo)-1]
-		bb.downloadAndQueueMedia(ctx, photo.FileID, "photo.jpg", msg.Caption)
+		bb.downloadAndQueueMedia(ctx, photo.FileID, "photo.jpg", msg.Caption, false)
 		return
 	}
 	if msg.Document != nil {
-		bb.downloadAndQueueMedia(ctx, msg.Document.FileID, msg.Document.FileName, msg.Caption)
+		bb.downloadAndQueueMedia(ctx, msg.Document.FileID, msg.Document.FileName, msg.Caption, false)
 		return
 	}
 
@@ -815,7 +815,7 @@ func (bb *BridgeBot) handleCallback(ctx context.Context, cb *models.CallbackQuer
 	}
 }
 
-func (bb *BridgeBot) downloadAndQueueMedia(ctx context.Context, fileID, filename, caption string) {
+func (bb *BridgeBot) downloadAndQueueMedia(ctx context.Context, fileID, filename, caption string, isVoice bool) {
 	pCfg := bb.cfg.Projects[bb.curProject]
 	fileObj, err := bb.b.GetFile(ctx, &bot.GetFileParams{FileID: fileID})
 	if err != nil {
@@ -859,6 +859,8 @@ func (bb *BridgeBot) downloadAndQueueMedia(ctx context.Context, fileID, filename
 		})
 		return
 	}
+
+	saved.IsVoice = isVoice
 
 	// Add to album batcher
 	bb.batcher.Add(*saved, caption)
