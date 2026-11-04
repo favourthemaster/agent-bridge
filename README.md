@@ -73,16 +73,17 @@ coachly  ·  model: gemini-3.8-flash-high  ·  running 1m 12s
 ### 💭 Collapsible Thinking Traces
 Internal reasoning is enclosed in native Telegram expandable blockquotes (`<blockquote expandable>`). On mobile and desktop, it collapses into a sleek single line that you can tap to expand, keeping your screen clean and distraction-free.
 
-### 🛡 Interactive Approvals
-When `agy` requests permission to run a risky command:
-- Sends an approval message with **[ Allow ]** and **[ Deny ]** buttons.
-- Starts a 10-minute timer (defaulting to Deny on timeout).
-- Tapping **Allow** injects the approval keystroke directly into the PTY and edits the message to `✔ Allowed by you`.
+### 🛡 Interactive & Auto Approvals
+- **Interactive Mode**: When `agy` requests permission to run a risky command, the bridge sends an approval message with **[ Allow ]** and **[ Deny ]** buttons and a 10-minute timeout (defaulting to Deny). Tapping **Allow** injects the approval keystroke directly into the PTY.
+- **Unattended Mode (`/autoapprove on`)**: When configured with `auto_approve: true` or toggled live via `/autoapprove on`, `agy` is launched with `--dangerously-skip-permissions` for 100% unattended autonomous runs. Approvals are resolved automatically with silent notices.
 
 ### 📁 Files & Multimodal Media
-- **Inbound**: Photos, screenshots, PDFs, code files, and voice notes sent from Telegram are saved into `<project>/.bridge/inbox/<date>/` and passed directly to `agy`'s multimodal Gemini engine. Files sent together as an album are batched into a single instruction.
+- **Inbound**: Photos, screenshots, PDFs, code files, and voice notes sent from Telegram are saved into `<project>/.bridge/inbox/<date>/` and passed directly to `agy`'s multimodal Gemini engine. Files sent together as an album are batched into a single instruction. Old files are automatically pruned based on `inbox_retention_days`.
 - **Outbox**: Any file `agy` writes to `<project>/.bridge/outbox/` is automatically sent to your chat and moved to `.bridge/sent/`.
 - **/get `<path>`**: Retrieve any file from the project workspace. Strictly sandboxed against directory traversal (`../`) and blocked against sensitive files (`.env`, `*.pem`, `id_*`, `.git/`).
+
+### ⏳ Long-Running Task Heartbeats
+For long tasks running unattended, the bridge emits a silent status heartbeat every 10 minutes (`⏳ Task still running on <project> (Xm elapsed)`), keeping you informed without ringing loud notifications. If the runner exits or crashes unexpectedly, the supervisor respawns it and dispatches an alerting notification.
 
 ---
 
@@ -162,6 +163,7 @@ systemctl --user status agent-bridge
 | `/model <name>` | Switch directly to an allowed model |
 | `/get <path>` | Download a file from the project directory |
 | `/queue` | View waiting instructions; `/queue clear` empties it |
+| `/autoapprove [on\|off]` | Toggle unattended tool execution mode live |
 | `/quiet` | Show only a 1-line progress indicator and final answer |
 | `/normal` | Default: live activity card + collapsible thinking traces |
 | `/verbose` | Stream live tool stdout tails and raw thinking chunks |
