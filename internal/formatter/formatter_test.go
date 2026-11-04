@@ -63,11 +63,11 @@ func TestMarkdownToHTMLFixtures(t *testing.T) {
 			},
 		},
 		{
-			name:  "Markdown table into monospace",
-			input: "| Name | Status |\n|---|---|\n| test | ok |",
+			name:  "Markdown table into clean list",
+			input: "| Attribute | Details |\n|---|---|\n| **Startup Name** | InstaBox (developed under the *InsForge* team) |\n| **Website** | [instabox.sh](https://instabox.sh/) |",
 			contains: []string{
-				"<code>| Name | Status |</code>",
-				"<code>| test | ok |</code>",
+				"• <b>Startup Name:</b> InstaBox (developed under the <i>InsForge</i> team)",
+				`• <b>Website:</b> <a href="https://instabox.sh/">instabox.sh</a>`,
 			},
 		},
 		{

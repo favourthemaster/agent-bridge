@@ -101,13 +101,12 @@ func MarkdownToHTML(md string) string {
 			flushQuote()
 		}
 
-		// Check for table row (convert to monospace block)
+		// Check for table row (convert to clean mobile-native list)
 		if strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|") {
-			// Skip markdown table separators like |---|---|
-			if strings.Contains(trimmed, "---") {
-				continue
+			renderedRow := renderTableRow(trimmed)
+			if renderedRow != "" {
+				out.WriteString(renderedRow)
 			}
-			out.WriteString(fmt.Sprintf("<code>%s</code>\n", EscapeHTML(line)))
 			continue
 		}
 
@@ -197,4 +196,66 @@ func processInlineMarkdown(line string) string {
 	}
 
 	return line
+}
+
+func isTableSeparator(line string) bool {
+	cleaned := strings.Trim(line, "| \t")
+	cleaned = strings.ReplaceAll(cleaned, "-", "")
+	cleaned = strings.ReplaceAll(cleaned, ":", "")
+	cleaned = strings.ReplaceAll(cleaned, "|", "")
+	cleaned = strings.TrimSpace(cleaned)
+	return cleaned == ""
+}
+
+func renderTableRow(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if isTableSeparator(trimmed) {
+		return ""
+	}
+
+	parts := strings.Split(trimmed, "|")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	if strings.HasPrefix(trimmed, "|") && len(parts) > 0 {
+		parts = parts[1:]
+	}
+	if strings.HasSuffix(trimmed, "|") && len(parts) > 0 {
+		parts = parts[:len(parts)-1]
+	}
+
+	var cells []string
+	for _, p := range parts {
+		cells = append(cells, strings.TrimSpace(p))
+	}
+
+	if len(cells) == 0 {
+		return ""
+	}
+
+	// If this row is a generic header like "Attribute | Details" or "Key | Value", omit it
+	if len(cells) == 2 {
+		c0 := strings.ToLower(cells[0])
+		c1 := strings.ToLower(cells[1])
+		if (c0 == "attribute" || c0 == "key" || c0 == "property") &&
+			(c1 == "details" || c1 == "value" || c1 == "description" || c1 == "detail") {
+			return ""
+		}
+	}
+
+	// Key-value / 2-column formatting
+	if len(cells) == 2 {
+		key := strings.Trim(cells[0], "*_")
+		val := cells[1]
+		return fmt.Sprintf("• <b>%s:</b> %s\n", processInlineMarkdown(key), processInlineMarkdown(val))
+	}
+
+	if len(cells) == 1 {
+		return fmt.Sprintf("• %s\n", processInlineMarkdown(cells[0]))
+	}
+
+	first := strings.Trim(cells[0], "*_")
+	rest := strings.Join(cells[1:], " · ")
+	return fmt.Sprintf("• <b>%s:</b> %s\n", processInlineMarkdown(first), processInlineMarkdown(rest))
 }
