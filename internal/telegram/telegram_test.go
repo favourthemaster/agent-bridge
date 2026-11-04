@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-bridge/internal/config"
@@ -111,5 +113,53 @@ func TestActionTickerLifecycle(t *testing.T) {
 	ticker.Stop()
 	if ticker.running {
 		t.Errorf("expected ticker.running to be false after Stop()")
+	}
+}
+
+func TestExtractImages(t *testing.T) {
+	tempDir := t.TempDir()
+	img1Path := filepath.Join(tempDir, "screen1.png")
+	img2Path := filepath.Join(tempDir, "screen2.png")
+
+	if err := os.WriteFile(img1Path, []byte("fake png 1"), 0644); err != nil {
+		t.Fatalf("failed creating test image 1: %v", err)
+	}
+	if err := os.WriteFile(img2Path, []byte("fake png 2"), 0644); err != nil {
+		t.Fatalf("failed creating test image 2: %v", err)
+	}
+
+	rawText := "Here is the verification result:\n\n" +
+		"````carousel\n" +
+		"![Original App Launch](file://" + img1Path + ")\n" +
+		"<!-- slide -->\n" +
+		"![Hot Reload with (Live Test)](" + img2Path + ")\n" +
+		"````\n\n" +
+		"### What We Tested\n" +
+		"All verification checks passed."
+
+	images, cleaned := extractImages(rawText, tempDir)
+
+	if len(images) != 2 {
+		t.Fatalf("expected 2 extracted images, got %d", len(images))
+	}
+
+	if images[0].Caption != "Original App Launch" || images[0].Path != img1Path {
+		t.Errorf("unexpected image 0: %+v", images[0])
+	}
+	if images[1].Caption != "Hot Reload with (Live Test)" || images[1].Path != img2Path {
+		t.Errorf("unexpected image 1: %+v", images[1])
+	}
+
+	if strings.Contains(cleaned, "carousel") {
+		t.Errorf("expected cleaned text not to contain 'carousel', got:\n%s", cleaned)
+	}
+	if strings.Contains(cleaned, "<!-- slide -->") {
+		t.Errorf("expected cleaned text not to contain slide comment, got:\n%s", cleaned)
+	}
+	if !strings.Contains(cleaned, "Here is the verification result:") {
+		t.Errorf("expected preamble text preserved, got:\n%s", cleaned)
+	}
+	if !strings.Contains(cleaned, "### What We Tested") {
+		t.Errorf("expected trailing markdown preserved, got:\n%s", cleaned)
 	}
 }

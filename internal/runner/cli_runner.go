@@ -103,9 +103,36 @@ func formatToolLabel(name string, info *StepToolInfo) string {
 	if info == nil || info.Parameters == nil {
 		return name
 	}
+
+	// 1. Prioritize toolSummary (provided by Antigravity run_command, etc.)
+	if summary, ok := info.Parameters["toolSummary"].(string); ok {
+		summary = strings.Trim(summary, "\" \t\r\n")
+		if summary != "" {
+			if len(summary) > 42 {
+				return summary[:39] + "..."
+			}
+			return summary
+		}
+	}
+
 	switch name {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
+			cmd = strings.Trim(cmd, "\" \t\r\n")
+			// Clean up instabox exec prefixes for brevity:
+			// "instabox exec test-dev -- python3 foo.py" -> "test-dev: python3 foo.py"
+			if strings.HasPrefix(cmd, "instabox exec ") {
+				parts := strings.SplitN(cmd, "--", 2)
+				if len(parts) == 2 {
+					boxName := strings.TrimSpace(strings.TrimPrefix(parts[0], "instabox exec"))
+					innerCmd := strings.Trim(strings.TrimSpace(parts[1]), "\" \t\r\n")
+					label := fmt.Sprintf("%s: %s", boxName, innerCmd)
+					if len(label) > 42 {
+						return label[:39] + "..."
+					}
+					return label
+				}
+			}
 			if len(cmd) > 35 {
 				return fmt.Sprintf("run: %s...", cmd[:32])
 			}
@@ -113,11 +140,26 @@ func formatToolLabel(name string, info *StepToolInfo) string {
 		}
 	case "read_file":
 		if p, ok := info.Parameters["Path"].(string); ok && p != "" {
-			return fmt.Sprintf("read: %s", filepath.Base(p))
+			return fmt.Sprintf("read %s", filepath.Base(p))
 		}
-	case "edit_file", "write_file":
+	case "edit_file":
 		if p, ok := info.Parameters["Path"].(string); ok && p != "" {
-			return fmt.Sprintf("edit: %s", filepath.Base(p))
+			return fmt.Sprintf("edit %s", filepath.Base(p))
+		}
+	case "write_file":
+		if p, ok := info.Parameters["Path"].(string); ok && p != "" {
+			return fmt.Sprintf("write %s", filepath.Base(p))
+		}
+	case "manage_task":
+		if action, ok := info.Parameters["Action"].(string); ok && action != "" {
+			return fmt.Sprintf("task: %s", action)
+		}
+	case "invoke_subagent":
+		if role, ok := info.Parameters["Role"].(string); ok && role != "" {
+			return fmt.Sprintf("agent: %s", role)
+		}
+		if typeName, ok := info.Parameters["TypeName"].(string); ok && typeName != "" {
+			return fmt.Sprintf("agent: %s", typeName)
 		}
 	}
 	return name

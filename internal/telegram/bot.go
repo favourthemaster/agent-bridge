@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,13 +251,33 @@ func (bb *BridgeBot) sendFileToTelegram(path string, cat media.FileCategory) err
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// If file is .txt or .md and under 4KB, send as text message rather than document attachment
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".txt" || ext == ".md" {
+		fi, err := os.Stat(path)
+		if err == nil && fi.Size() > 0 && fi.Size() < 4096 {
+			data, readErr := os.ReadFile(path)
+			if readErr == nil {
+				text := strings.TrimSpace(string(data))
+				if text != "" {
+					_, err = bb.b.SendMessage(ctx, &bot.SendMessageParams{
+						ChatID:    bb.cfg.Telegram.AllowedUserID,
+						Text:      fmt.Sprintf("📢 <b>Progress:</b>\n%s", formatter.EscapeHTML(text)),
+						ParseMode: models.ParseModeHTML,
+					})
+					return err
+				}
+			}
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	filename := f.Name()
+	filename := filepath.Base(path)
 	inputUpload := &models.InputFileUpload{
 		Filename: filename,
 		Data:     f,
@@ -717,6 +739,16 @@ func (bb *BridgeBot) finishTurn(finalText, thinking string) {
 	// Redaction pass
 	safeAnswer := bb.redactor.Redact(rawAnswer)
 
+	// Extract images referenced in markdown or carousel blocks
+	projectPath := ""
+	if pCfg, ok := bb.cfg.Projects[bb.curProject]; ok {
+		projectPath = pCfg.Path
+	}
+	extractedImgs, cleanedAnswer := extractImages(safeAnswer, projectPath)
+	if len(extractedImgs) > 0 {
+		safeAnswer = cleanedAnswer
+	}
+
 	// Build rich markdown message (preserving native GFM tables and formatting)
 	richMarkdown := safeAnswer
 	if strings.TrimSpace(thinking) != "" && bb.curSession.Verbosity != "quiet" {
@@ -817,6 +849,11 @@ func (bb *BridgeBot) finishTurn(finalText, thinking string) {
 				}
 			}
 		}
+	}
+
+	// Dispatch extracted images directly to Telegram as native photos / albums
+	if len(extractedImgs) > 0 {
+		bb.dispatchImages(ctx, extractedImgs)
 	}
 
 	// Drain next message from queue if waiting
@@ -966,4 +1003,139 @@ func (bb *BridgeBot) downloadAndQueueMedia(ctx context.Context, fileID, filename
 
 	// Add to album batcher
 	bb.batcher.Add(*saved, caption)
+}
+
+type ExtractedImage struct {
+	Caption string
+	Path    string
+}
+
+var (
+	imgRegex      = regexp.MustCompile(`!\[([^\]]*)\]\((?:file:\/\/)?([^)]+\.(?:png|jpg|jpeg|webp|gif|bmp))\)`)
+	carouselRegex = regexp.MustCompile("(?s)````carousel\\s*\\n.*?\\n\\s*````|```carousel\\s*\\n.*?\\n\\s*```")
+	slideRegex    = regexp.MustCompile(`(?m)^\s*<!--\s*slide\s*-->\s*$\n?`)
+)
+
+func extractImages(text, baseDir string) ([]ExtractedImage, string) {
+	var images []ExtractedImage
+	seenPaths := make(map[string]bool)
+
+	matches := imgRegex.FindAllStringSubmatch(text, -1)
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		caption := strings.TrimSpace(m[1])
+		rawPath := strings.TrimSpace(m[2])
+
+		// Strip file:// prefix if present
+		rawPath = strings.TrimPrefix(rawPath, "file://")
+
+		var resolved string
+		if filepath.IsAbs(rawPath) {
+			resolved = rawPath
+		} else if baseDir != "" {
+			resolved = filepath.Join(baseDir, rawPath)
+		} else {
+			resolved = rawPath
+		}
+
+		if _, err := os.Stat(resolved); err == nil && !seenPaths[resolved] {
+			seenPaths[resolved] = true
+			images = append(images, ExtractedImage{
+				Caption: caption,
+				Path:    resolved,
+			})
+		}
+	}
+
+	cleaned := text
+	if len(images) > 0 {
+		cleaned = carouselRegex.ReplaceAllString(cleaned, "")
+		cleaned = slideRegex.ReplaceAllString(cleaned, "")
+		cleaned = strings.TrimSpace(cleaned)
+	}
+
+	return images, cleaned
+}
+
+func (bb *BridgeBot) dispatchImages(ctx context.Context, images []ExtractedImage) {
+	if len(images) == 0 {
+		return
+	}
+
+	if len(images) == 1 {
+		img := images[0]
+		f, err := os.Open(img.Path)
+		if err != nil {
+			log.Printf("[BridgeBot] Failed to open image %s: %v", img.Path, err)
+			return
+		}
+		defer f.Close()
+
+		_, err = bb.b.SendPhoto(ctx, &bot.SendPhotoParams{
+			ChatID:  bb.cfg.Telegram.AllowedUserID,
+			Photo:   &models.InputFileUpload{Filename: filepath.Base(img.Path), Data: f},
+			Caption: img.Caption,
+		})
+		if err != nil {
+			log.Printf("[BridgeBot] SendPhoto failed: %v", err)
+		}
+		return
+	}
+
+	// Multiple images: send in groups of up to 10
+	for i := 0; i < len(images); i += 10 {
+		end := i + 10
+		if end > len(images) {
+			end = len(images)
+		}
+		batch := images[i:end]
+
+		if len(batch) == 1 {
+			img := batch[0]
+			f, err := os.Open(img.Path)
+			if err != nil {
+				continue
+			}
+			_, _ = bb.b.SendPhoto(ctx, &bot.SendPhotoParams{
+				ChatID:  bb.cfg.Telegram.AllowedUserID,
+				Photo:   &models.InputFileUpload{Filename: filepath.Base(img.Path), Data: f},
+				Caption: img.Caption,
+			})
+			_ = f.Close()
+			continue
+		}
+
+		mediaList := make([]models.InputMedia, 0, len(batch))
+		var openFiles []*os.File
+
+		for idx, img := range batch {
+			f, err := os.Open(img.Path)
+			if err != nil {
+				continue
+			}
+			openFiles = append(openFiles, f)
+			attachName := fmt.Sprintf("attach://img_%d%s", idx, filepath.Ext(img.Path))
+			mediaList = append(mediaList, &models.InputMediaPhoto{
+				Media:           attachName,
+				Caption:         img.Caption,
+				MediaAttachment: f,
+			})
+		}
+
+		if len(mediaList) > 0 {
+			_, err := bb.b.SendMediaGroup(ctx, &bot.SendMediaGroupParams{
+				ChatID: bb.cfg.Telegram.AllowedUserID,
+				Media:  mediaList,
+			})
+			if err != nil {
+				log.Printf("[BridgeBot] SendMediaGroup batch failed: %v", err)
+			}
+		}
+
+		for _, f := range openFiles {
+			_ = f.Close()
+		}
+	}
 }
