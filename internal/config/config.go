@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	Telegram TelegramConfig           `yaml:"telegram"`
+	Mobile   MobileConfig             `yaml:"mobile"`
 	Projects map[string]ProjectConfig `yaml:"projects"`
 	Models   []ModelConfig            `yaml:"models"`
 	Limits   LimitsConfig             `yaml:"limits"`
@@ -21,6 +22,12 @@ type Config struct {
 type TelegramConfig struct {
 	BotToken      string `yaml:"bot_token"`
 	AllowedUserID int64  `yaml:"allowed_user_id"`
+}
+
+type MobileConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
+	AuthToken  string `yaml:"auth_token"`
 }
 
 type ProjectConfig struct {
@@ -59,6 +66,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
+		Mobile: MobileConfig{
+			ListenAddr: ":8765",
+		},
 		Limits: LimitsConfig{
 			MaxFileSizeMB:          20,
 			InboxRetentionDays:     7,
@@ -77,6 +87,16 @@ func Load(path string) (*Config, error) {
 	// Environment variable overrides
 	if token := os.Getenv("AGENT_BRIDGE_TELEGRAM_TOKEN"); token != "" {
 		cfg.Telegram.BotToken = token
+	}
+	if authToken := os.Getenv("AGENT_BRIDGE_AUTH_TOKEN"); authToken != "" {
+		cfg.Mobile.AuthToken = authToken
+	}
+	if addr := os.Getenv("AGENT_BRIDGE_LISTEN_ADDR"); addr != "" {
+		cfg.Mobile.ListenAddr = addr
+		cfg.Mobile.Enabled = true
+	}
+	if strings.TrimSpace(cfg.Mobile.ListenAddr) == "" {
+		cfg.Mobile.ListenAddr = ":8765"
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -104,12 +124,19 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) HasTelegram() bool {
+	tok := strings.TrimSpace(c.Telegram.BotToken)
+	return tok != "" && tok != "YOUR_TELEGRAM_BOT_TOKEN_HERE" && c.Telegram.AllowedUserID != 0
+}
+
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Telegram.BotToken) == "" {
-		return fmt.Errorf("telegram.bot_token is required (or set AGENT_BRIDGE_TELEGRAM_TOKEN)")
-	}
-	if c.Telegram.AllowedUserID == 0 {
-		return fmt.Errorf("telegram.allowed_user_id must be set to your numeric Telegram user ID")
+	if !c.Mobile.Enabled {
+		if strings.TrimSpace(c.Telegram.BotToken) == "" {
+			return fmt.Errorf("telegram.bot_token is required (or set AGENT_BRIDGE_TELEGRAM_TOKEN)")
+		}
+		if c.Telegram.AllowedUserID == 0 {
+			return fmt.Errorf("telegram.allowed_user_id must be set to your numeric Telegram user ID")
+		}
 	}
 	if len(c.Projects) == 0 {
 		return fmt.Errorf("at least one project must be configured under 'projects'")

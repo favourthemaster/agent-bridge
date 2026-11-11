@@ -139,3 +139,12 @@ func (f *FakeRunner) SimulateFlood(count int, interval time.Duration) {
 	})
 	f.SetBusy(false)
 }
+
+func (f *FakeRunner) ApprovalSnapshot() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.Approvals) == 0 {
+		return 0, false
+	}
+	return len(f.Approvals), f.Approvals[len(f.Approvals)-1]
+}

@@ -63,6 +63,10 @@ func Open(path string) (*DB, error) {
 		_ = sqlDB.Close()
 		return nil, err
 	}
+	if err := d.MigrateMobileTables(); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 
 	return d, nil
 }

@@ -81,6 +81,7 @@ type StepUpdateEvent struct {
 	StepType       string        `json:"step_type"` // user_input, tool, agent_response
 	ToolName       string        `json:"tool_name,omitempty"`
 	TextDelta      string        `json:"text_delta,omitempty"`
+	ThinkingDelta  string        `json:"thinking_delta,omitempty"`
 	DurationSec    float64       `json:"duration_seconds,omitempty"`
 	ToolInfo       *StepToolInfo `json:"tool_info,omitempty"`
 }
@@ -329,6 +330,12 @@ func (r *CLIRunner) WriteInstruction(text string) error {
 								r.mu.Lock()
 								r.convID = su.ConversationID
 								r.mu.Unlock()
+							}
+							if su.ThinkingDelta != "" && cb != nil {
+								cb(parser.ParsedEvent{
+									Type: parser.EventThinkingChunk,
+									Text: su.ThinkingDelta,
+								})
 							}
 							switch su.StepType {
 							case "tool":
